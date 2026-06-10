@@ -1,0 +1,50 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #060f0b;
+  --surface:   rgba(9,22,17,0.75);
+  --border:    #1a3028;
+  --border2:   #1e3a2a;
+  --green:     #22c55e;
+  --green-dim: #4ade80;
+  --accent:    #6ee7b7;
+  --text:      #d1fae5;
+  --text-dim:  #4b7a60;
+  --text-muted:#2d4a3a;
+  --danger:    #ef4444;
+  --warn:      #eab308;
+  --info:      #3b82f6;
+  --mono:      'DM Mono', 'Courier New', monospace;
+  --sans:      'Space Grotesk', sans-serif;
+}
+
+html, body, #root {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #060f0b; }
+::-webkit-scrollbar-thumb { background: #1e3a2a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #22c55e44; }
+
+/* spin animation for refresh icon */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.8s linear infinite; }
+
+/* fade-in for page content */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 0.3s ease forwards; }
+
+/* toast overrides */
+.react-hot-toast > div {
+  font-family: var(--mono) !important;
+  font-size: 12px !important;
+}
