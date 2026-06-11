@@ -10,7 +10,10 @@ import java.time.LocalDateTime;
  * One Order Number can have many Part No rows.
  */
 @Entity
-@Table(name = "order_items")
+@Table(name = "order_items", uniqueConstraints = {
+    @UniqueConstraint(name = "uk_order_items_order_number_part_no",
+                      columnNames = {"order_number", "part_no"})
+})
 @Getter
 @Setter
 @NoArgsConstructor

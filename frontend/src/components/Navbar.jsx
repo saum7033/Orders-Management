@@ -1,12 +1,17 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Database, LayoutDashboard, LogOut } from 'lucide-react';
+import { Database, LayoutDashboard, LogOut, Users, Settings } from 'lucide-react';
 
 export default function Navbar({ authUser, onLogout }) {
   const { pathname } = useLocation();
+  const isAdmin = authUser?.role === 'ADMIN';
   const nav = [
     { to: '/entry',     icon: <Database size={14} />,        label: 'Data Entry' },
     { to: '/dashboard', icon: <LayoutDashboard size={14} />, label: 'Dashboard' },
+    ...(isAdmin ? [
+      { to: '/users',    icon: <Users    size={14} />, label: 'Users'    },
+      { to: '/settings', icon: <Settings size={14} />, label: 'Settings' },
+    ] : []),
   ];
   return (
     <nav style={{

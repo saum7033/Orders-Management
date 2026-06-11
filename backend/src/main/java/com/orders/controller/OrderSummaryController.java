@@ -3,6 +3,7 @@ package com.orders.controller;
 
 
 import com.orders.dto.ApiResponse;
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderSummaryDTO;
 import com.orders.service.ExcelParserService;
 import com.orders.service.OrderSummaryService;
@@ -69,14 +70,26 @@ public class OrderSummaryController {
         }
     }
 
+    // ── POST single record (manual entry) ────────────────────────────────────
+    @PostMapping
+    public ResponseEntity<ApiResponse<OrderSummaryDTO>> createOne(@RequestBody OrderSummaryDTO dto) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Created", service.saveOne(dto)));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(409).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     // ── POST bulk save (after user clicks Save) ───────────────────────────────
     @PostMapping("/bulk")
-    public ResponseEntity<ApiResponse<List<OrderSummaryDTO>>> bulkSave(
+    public ResponseEntity<ApiResponse<ImportResult<OrderSummaryDTO>>> bulkSave(
             @RequestBody List<OrderSummaryDTO> dtos) {
         if (dtos == null || dtos.isEmpty()) {
             return ResponseEntity.badRequest().body(ApiResponse.error("No data to save"));
         }
-        List<OrderSummaryDTO> saved = service.saveAll(dtos);
-        return ResponseEntity.ok(ApiResponse.ok("Saved " + saved.size() + " records", saved));
+        ImportResult<OrderSummaryDTO> result = service.saveAll(dtos);
+        String msg = String.format("Processed %d rows: %d imported, %d failed",
+                result.getTotalRows(), result.getImported(), result.getFailed());
+        return ResponseEntity.ok(ApiResponse.ok(msg, result));
     }
 }

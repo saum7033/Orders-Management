@@ -1,5 +1,6 @@
 package com.orders.service;
 
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderSummaryDTO;
 import com.orders.entity.OrderSummary;
 import com.orders.repository.OrderSummaryRepository;
@@ -8,7 +9,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -26,17 +29,62 @@ public class OrderSummaryService {
                 .stream().map(this::toDTO).collect(Collectors.toList());
     }
 
-    /** Bulk save — skips rows where orderNumber already exists */
     @Transactional
-    public List<OrderSummaryDTO> saveAll(List<OrderSummaryDTO> dtos) {
-        List<OrderSummary> toInsert = new ArrayList<>();
-        for (OrderSummaryDTO dto : dtos) {
-            if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) continue;
-            if (!repo.existsByOrderNumber(dto.getOrderNumber().trim())) {
-                toInsert.add(toEntity(dto));
-            }
+    public OrderSummaryDTO saveOne(OrderSummaryDTO dto) {
+        if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) {
+            throw new RuntimeException("Order Number is required");
         }
-        return repo.saveAll(toInsert).stream().map(this::toDTO).collect(Collectors.toList());
+        String orderNum = dto.getOrderNumber().trim();
+        if (repo.countByOrderNumber(orderNum) > 0) {
+            throw new RuntimeException("Order Number already exists");
+        }
+        return toDTO(repo.save(toEntity(dto)));
+    }
+
+    /** Bulk save — validates Order Number (mandatory), checks duplicate by Order Number,
+     *  returns ImportResult with per-row errors. */
+    @Transactional
+    public ImportResult<OrderSummaryDTO> saveAll(List<OrderSummaryDTO> dtos) {
+        List<OrderSummary> toInsert = new ArrayList<>();
+        List<ImportResult.ImportError> errors = new ArrayList<>();
+        Set<String> seenOrderNumbers = new HashSet<>();
+        int rowIndex = 0;
+
+        for (OrderSummaryDTO dto : dtos) {
+            rowIndex++;
+
+            if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .reason("Order Number is missing.")
+                        .build());
+                continue;
+            }
+
+            String orderNum = dto.getOrderNumber().trim();
+
+            if (repo.countByOrderNumber(orderNum) > 0 || seenOrderNumbers.contains(orderNum.toLowerCase())) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .orderNumber(orderNum)
+                        .reason("Order Number already exists.")
+                        .build());
+                continue;
+            }
+
+            seenOrderNumbers.add(orderNum.toLowerCase());
+            toInsert.add(toEntity(dto));
+        }
+
+        List<OrderSummaryDTO> savedDtos = repo.saveAll(toInsert).stream().map(this::toDTO).collect(Collectors.toList());
+
+        return ImportResult.<OrderSummaryDTO>builder()
+                .totalRows(rowIndex)
+                .imported(savedDtos.size())
+                .failed(errors.size())
+                .savedRows(savedDtos)
+                .errors(errors)
+                .build();
     }
 
     @Transactional

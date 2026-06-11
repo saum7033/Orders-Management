@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Plus, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { STATUS_OPTIONS } from '../utils/columns';
@@ -158,6 +158,7 @@ export default function ManualEntryForm({ onAdd, loading, tableType = 'T1' }) {
 
   const [form,   setForm]   = useState(emptyForm);
   const [errors, setErrors] = useState({});
+  const submittingRef = useRef(false);
 
   const validate = () => {
     const e = {};
@@ -166,14 +167,22 @@ export default function ManualEntryForm({ onAdd, loading, tableType = 'T1' }) {
     return Object.keys(e).length === 0;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (submittingRef.current || loading) return;
     if (!validate()) {
       toast.error('Please fill in all required fields (marked with *)');
       return;
     }
-    onAdd({ ...form });
-    setForm(emptyForm);
-    setErrors({});
+    submittingRef.current = true;
+    try {
+      await onAdd({ ...form });
+      setForm(emptyForm);
+      setErrors({});
+    } catch {
+      // error already shown by caller via toast
+    } finally {
+      submittingRef.current = false;
+    }
   };
 
   return (

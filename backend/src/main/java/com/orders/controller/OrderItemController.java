@@ -2,10 +2,12 @@ package com.orders.controller;
 
 
 import com.orders.dto.ApiResponse;
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderItemDTO;
 import com.orders.service.ExcelParserService;
 import com.orders.service.OrderItemService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -42,7 +44,13 @@ public class OrderItemController {
         if (dto.getPartNo() == null || dto.getPartNo().isBlank()) {
             return ResponseEntity.badRequest().body(ApiResponse.error("Part No is required"));
         }
-        return ResponseEntity.ok(ApiResponse.ok("Saved successfully", service.saveOne(dto)));
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Saved successfully", service.saveOne(dto)));
+        } catch (DataIntegrityViolationException e) {
+            return ResponseEntity.status(409).body(ApiResponse.error("Order Number + Part Number already exists"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(409).body(ApiResponse.error(e.getMessage()));
+        }
     }
 
     // ── PUT update ────────────────────────────────────────────────────────────
@@ -87,12 +95,14 @@ public class OrderItemController {
 
     // ── POST bulk save (after user clicks Save) ───────────────────────────────
     @PostMapping("/bulk")
-    public ResponseEntity<ApiResponse<List<OrderItemDTO>>> bulkSave(
+    public ResponseEntity<ApiResponse<ImportResult<OrderItemDTO>>> bulkSave(
             @RequestBody List<OrderItemDTO> dtos) {
         if (dtos == null || dtos.isEmpty()) {
             return ResponseEntity.badRequest().body(ApiResponse.error("No data to save"));
         }
-        List<OrderItemDTO> saved = service.saveAll(dtos);
-        return ResponseEntity.ok(ApiResponse.ok("Saved " + saved.size() + " records", saved));
+        ImportResult<OrderItemDTO> result = service.saveAll(dtos);
+        String msg = String.format("Processed %d rows: %d imported, %d failed",
+                result.getTotalRows(), result.getImported(), result.getFailed());
+        return ResponseEntity.ok(ApiResponse.ok(msg, result));
     }
 }

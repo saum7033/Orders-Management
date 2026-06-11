@@ -1,5 +1,6 @@
 package com.orders.service;
 
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderTransactionDTO;
 import com.orders.entity.OrderTransaction;
 import com.orders.repository.OrderTransactionRepository;
@@ -8,8 +9,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,24 +26,70 @@ public class OrderTransactionService {
     }
 
     /**
-     * Bulk upsert — if Order Number already exists, update that record;
-     * otherwise insert a new one.  Supports thousands of rows efficiently.
+     * Bulk insert — rejects rows where (orderNumber + partNo) already exists in DB.
+     * Returns ImportResult with per-row errors for duplicates or missing Order Numbers.
      */
     @Transactional
-    public List<OrderTransactionDTO> bulkUpsert(List<OrderTransactionDTO> dtos) {
+    public ImportResult<OrderTransactionDTO> bulkUpsert(List<OrderTransactionDTO> dtos) {
         List<OrderTransaction> toSave = new ArrayList<>();
+        List<ImportResult.ImportError> errors = new ArrayList<>();
+        Set<String> seenKeys = new HashSet<>();
+        int rowIndex = 0;
+
         for (OrderTransactionDTO dto : dtos) {
-            if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) continue;
-            Optional<OrderTransaction> existing = repo.findByOrderNumber(dto.getOrderNumber().trim());
-            if (existing.isPresent()) {
-                OrderTransaction e = existing.get();
-                updateEntity(e, dto);
-                toSave.add(e);
-            } else {
-                toSave.add(toEntity(dto));
+            rowIndex++;
+
+            if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .reason("Order Number is missing.")
+                        .build());
+                continue;
             }
+
+            String orderNum = dto.getOrderNumber().trim();
+            String partNo = dto.getPartNo() != null ? dto.getPartNo().trim() : "";
+            String compositeKey = orderNum.toLowerCase() + "|" + partNo.toLowerCase();
+
+            if (repo.countDuplicateCombination(orderNum, partNo) > 0 || seenKeys.contains(compositeKey)) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .orderNumber(orderNum)
+                        .reason("Order Number + Part Number already exists.")
+                        .build());
+                continue;
+            }
+
+            seenKeys.add(compositeKey);
+            toSave.add(toEntity(dto));
         }
-        return repo.saveAll(toSave).stream().map(this::toDTO).collect(Collectors.toList());
+
+        List<OrderTransactionDTO> savedDtos = repo.saveAll(toSave).stream().map(this::toDTO).collect(Collectors.toList());
+
+        return ImportResult.<OrderTransactionDTO>builder()
+                .totalRows(rowIndex)
+                .imported(savedDtos.size())
+                .failed(errors.size())
+                .savedRows(savedDtos)
+                .errors(errors)
+                .build();
+    }
+
+    @Transactional
+    public OrderTransactionDTO upsertOne(OrderTransactionDTO dto) {
+        if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) {
+            throw new RuntimeException("Order Number is required");
+        }
+        String orderNum = dto.getOrderNumber().trim();
+        List<OrderTransaction> existing = repo.findByOrderNumberIgnoreCase(orderNum);
+        OrderTransaction entity;
+        if (!existing.isEmpty()) {
+            entity = existing.get(0);
+            updateEntity(entity, dto);
+        } else {
+            entity = toEntity(dto);
+        }
+        return toDTO(repo.save(entity));
     }
 
     @Transactional

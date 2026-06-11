@@ -1,6 +1,7 @@
 package com.orders.controller;
 
 import com.orders.dto.ApiResponse;
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderTransactionDTO;
 import com.orders.service.ExcelParserService;
 import com.orders.service.OrderTransactionService;
@@ -47,6 +48,16 @@ public class OrderTransactionController {
         return ResponseEntity.ok(ApiResponse.ok("All records deleted", null));
     }
 
+    // ── POST single upsert (manual entry) ────────────────────────────────────
+    @PostMapping
+    public ResponseEntity<ApiResponse<OrderTransactionDTO>> createOne(@RequestBody OrderTransactionDTO dto) {
+        try {
+            return ResponseEntity.ok(ApiResponse.ok("Saved", service.upsertOne(dto)));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(409).body(ApiResponse.error(e.getMessage()));
+        }
+    }
+
     @PostMapping("/preview")
     public ResponseEntity<ApiResponse<List<OrderTransactionDTO>>> preview(
             @RequestParam("file") MultipartFile file) {
@@ -62,12 +73,14 @@ public class OrderTransactionController {
     }
 
     @PostMapping("/bulk-upsert")
-    public ResponseEntity<ApiResponse<List<OrderTransactionDTO>>> bulkUpsert(
+    public ResponseEntity<ApiResponse<ImportResult<OrderTransactionDTO>>> bulkUpsert(
             @RequestBody List<OrderTransactionDTO> dtos) {
         if (dtos == null || dtos.isEmpty()) {
             return ResponseEntity.badRequest().body(ApiResponse.error("No data to save"));
         }
-        List<OrderTransactionDTO> saved = service.bulkUpsert(dtos);
-        return ResponseEntity.ok(ApiResponse.ok("Upserted " + saved.size() + " records", saved));
+        ImportResult<OrderTransactionDTO> result = service.bulkUpsert(dtos);
+        String msg = String.format("Processed %d rows: %d imported, %d failed",
+                result.getTotalRows(), result.getImported(), result.getFailed());
+        return ResponseEntity.ok(ApiResponse.ok(msg, result));
     }
 }

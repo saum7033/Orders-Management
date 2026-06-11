@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useMemo, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { Trash2, Pencil, Save, XCircle, Search, X, Check } from 'lucide-react';
 import {
   PRIORITY_COLORS, STATUS_OPTIONS, STATUS_COLORS,
@@ -154,7 +154,6 @@ function StatusDropdown({ value, onUpdate }) {
         {cur} <span style={{ fontSize:8 }}>▼</span>
       </button>
       {open && (
-        /* position:fixed escapes all overflow:hidden ancestors */
         <div onMouseDown={e => e.stopPropagation()}
           style={{ position:'fixed', top:pos.top, left:pos.left,
             background:'#0d1f18', border:'1px solid #1e3a2a', borderRadius:8,
@@ -250,13 +249,11 @@ function ReadRow({ row, cols, widths, onEdit, onDelete, onStatusChange, role, sh
     if (col.key==='priorityColour') return <PriorityBadge value={row[col.key]} />;
     if (col.key==='source')         return <SourceBadge value={row[col.key]} />;
 
-    // USER role — inline pencil edit directly on the cell
     if (col.key==='comments' && role==='USER')
       return <InlineEditCell value={row[col.key]} onSave={v=>onStatusChange(row.id,'comments',v)} isComment />;
     if (col.key==='remark' && role==='USER')
       return <InlineEditCell value={row[col.key]} onSave={v=>onStatusChange(row.id,'remark',v)} isComment={false} />;
 
-    // ADMIN — static display (admin edits via full-row edit button)
     if (col.key==='comments') return <CommentCell value={row[col.key]} />;
     if (col.key==='remark')   return <RemarkCell value={row[col.key]} />;
 
@@ -278,11 +275,10 @@ function ReadRow({ row, cols, widths, onEdit, onDelete, onStatusChange, role, sh
       ))}
       {showActions && (
         <td style={{ ...TD, width:90, minWidth:90, whiteSpace:'nowrap' }}>
-          {/* Edit + Delete visible to ADMIN only */}
           {role==='ADMIN' && (
             <div style={{ display:'flex', gap:5 }}>
-              <button onClick={()=>onEdit(row.id)} title="Edit row" style={mkBtn('#93c5fd','rgba(59,130,246,0.12)')}><Pencil size={12}/></button>
-              <button onClick={()=>{ if(window.confirm('Delete this row?')) onDelete(row.id); }}
+              <button onClick={e=>{ e.stopPropagation(); onEdit(row.id); }} title="Edit row" style={mkBtn('#93c5fd','rgba(59,130,246,0.12)')}><Pencil size={12}/></button>
+              <button onClick={e=>{ e.stopPropagation(); if(window.confirm('Delete this row?')) onDelete(row.id); }}
                 title="Delete row" style={mkBtn('#f87171','rgba(239,68,68,0.1)')}><Trash2 size={12}/></button>
             </div>
           )}
@@ -339,7 +335,6 @@ function ResizerTh({ col, width, onResize, filterVal, onFilter, showFilter }) {
           )}
         </div>
       )}
-      {/* drag-to-resize handle — visible line on right edge, widens on hover */}
       <div ref={handleRef} onMouseDown={startDrag}
         style={{ position:'absolute', right:0, top:0, bottom:0, width:4,
           cursor:'col-resize', background:'transparent',
@@ -352,27 +347,23 @@ function ResizerTh({ col, width, onResize, filterVal, onFilter, showFilter }) {
 
 /* ════════════════════════════════════════════════════════════════════════════
    MAIN DataTable
-   Architecture: TWO separate scroll-synced divs.
-     - headerDiv  : overflow-x:auto, overflow-y:hidden  → shows header table
-     - bodyDiv    : overflow-x:auto, overflow-y:auto     → shows body table
-   Both tables use identical colgroup driven by colWidths state.
-   onScroll on bodyDiv syncs headerDiv.scrollLeft and vice-versa so they
-   always move together — giving the appearance of a single table with a
-   sticky header.
 ════════════════════════════════════════════════════════════════════════════ */
 export default function DataTable({
   rows, cols, onDelete, onSave, onStatusChange,
   emptyMsg, showActions = true, role = 'USER',
 }) {
-  const [editingId,  setEditingId]  = useState(null);
-  const [savingId,   setSavingId]   = useState(null);
-  const [globalQ,    setGlobalQ]    = useState('');
-  const [colFilters, setColFilters] = useState({});
-  const [showFilter, setShowFilter] = useState(false);
+  const [editingId,   setEditingId]   = useState(null);
+  const [savingId,    setSavingId]    = useState(null);
+  const [globalQ,     setGlobalQ]     = useState('');
+  const [colFilters,  setColFilters]  = useState({});
+  const [showFilter,  setShowFilter]  = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
-  const headerRef = useRef(null);
-  const bodyRef   = useRef(null);
-  const syncingRef = useRef(false); // prevent scroll-loop
+  const headerRef     = useRef(null);
+  const bodyRef       = useRef(null);
+  const syncingRef    = useRef(false);
+  const lastClickRef  = useRef(null);   // index of last clicked row (for Shift+click)
+  const checkAllRef   = useRef(null);   // header checkbox element (for indeterminate)
 
   // ── col widths ────────────────────────────────────────────────────────────
   const [widths, setWidths] = useState(() => {
@@ -381,7 +372,6 @@ export default function DataTable({
     return w;
   });
 
-  // Re-init when cols prop changes (switching T1 ↔ T2)
   useEffect(() => {
     setWidths(() => {
       const w = {};
@@ -391,20 +381,23 @@ export default function DataTable({
     setEditingId(null);
     setGlobalQ('');
     setColFilters({});
+    setSelectedIds(new Set());
+    lastClickRef.current = null;
   }, [cols]);
 
   const setW = useCallback((key, val) => {
     setWidths(prev => ({ ...prev, [key]: Math.max(60, val) }));
   }, []);
 
-  const ACTIONS_W = 90;
+  const CHECKBOX_W = 36;
+  const ACTIONS_W  = 90;
   const showActualActions = showActions && role === 'ADMIN';
   const totalW = useMemo(
-    () => cols.reduce((s,c) => s + (widths[c.key]||DEFAULT_COL_WIDTH), 0) + (showActualActions ? ACTIONS_W : 0),
+    () => CHECKBOX_W + cols.reduce((s,c) => s + (widths[c.key]||DEFAULT_COL_WIDTH), 0) + (showActualActions ? ACTIONS_W : 0),
     [cols, widths, showActualActions]
   );
 
-  // ── sync scroll ───────────────────────────────────────────────────────────
+  // ── scroll sync ───────────────────────────────────────────────────────────
   const onBodyScroll = useCallback(() => {
     if (syncingRef.current) return;
     syncingRef.current = true;
@@ -443,6 +436,59 @@ export default function DataTable({
     return r;
   }, [rows, globalQ, colFilters, cols]);
 
+  // ── selection logic ───────────────────────────────────────────────────────
+  const allSelected  = filtered.length > 0 && filtered.every((r, i) => selectedIds.has(r.id ?? i));
+  const someSelected = !allSelected && filtered.some((r, i) => selectedIds.has(r.id ?? i));
+
+  // Drive indeterminate state on the header checkbox
+  useEffect(() => {
+    if (checkAllRef.current) checkAllRef.current.indeterminate = someSelected;
+  }, [someSelected, allSelected]);
+
+  const toggleAll = useCallback(() => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filtered.map((r, i) => r.id ?? i)));
+    }
+  }, [allSelected, filtered]);
+
+  // Click anywhere on a row (not on the checkbox TD)
+  const handleRowClick = useCallback((e, rowKey, rowIndex) => {
+    if (e.shiftKey && lastClickRef.current !== null) {
+      // Range select from last clicked index to this index
+      const start = Math.min(lastClickRef.current, rowIndex);
+      const end   = Math.max(lastClickRef.current, rowIndex);
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        for (let i = start; i <= end; i++) next.add(filtered[i].id ?? i);
+        return next;
+      });
+    } else if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd: toggle individual row
+      setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(rowKey)) next.delete(rowKey); else next.add(rowKey);
+        return next;
+      });
+      lastClickRef.current = rowIndex;
+    } else {
+      // Plain click: select only this row
+      setSelectedIds(new Set([rowKey]));
+      lastClickRef.current = rowIndex;
+    }
+  }, [filtered]);
+
+  // Click on the checkbox TD: toggle just that row (no range)
+  const handleCheckboxClick = useCallback((e, rowKey) => {
+    e.stopPropagation(); // don't fire row click
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey); else next.add(rowKey);
+      return next;
+    });
+  }, []);
+
   const handleSave = async (id, draft) => {
     setSavingId(id);
     try { await onSave(id, draft); setEditingId(null); }
@@ -451,9 +497,9 @@ export default function DataTable({
 
   const hasFilters = globalQ || Object.values(colFilters).some(Boolean);
 
-  // shared colgroup markup for BOTH tables (guarantees identical widths)
   const ColGroup = () => (
     <colgroup>
+      <col style={{ width:CHECKBOX_W, minWidth:CHECKBOX_W }} />
       {cols.map(col => <col key={col.key} style={{ width:widths[col.key]||DEFAULT_COL_WIDTH, minWidth:widths[col.key]||DEFAULT_COL_WIDTH }} />)}
       {showActualActions && <col style={{ width:ACTIONS_W, minWidth:ACTIONS_W }} />}
     </colgroup>
@@ -468,7 +514,7 @@ export default function DataTable({
 
   return (
     <div>
-      {/* ── search toolbar ── */}
+      {/* ── search + selection toolbar ── */}
       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, flexWrap:'wrap' }}>
         <div style={{ position:'relative', flex:'1 1 220px', minWidth:180 }}>
           <Search size={13} style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', color:'#4b7a60', pointerEvents:'none' }} />
@@ -497,34 +543,50 @@ export default function DataTable({
             <X size={12}/> CLEAR FILTERS
           </button>
         )}
+        {/* Selection count pill */}
+        {selectedIds.size > 0 && (
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <span style={{ fontSize:11, color:'#6ee7b7', background:'rgba(5,150,105,0.15)',
+              border:'1px solid rgba(5,150,105,0.35)', borderRadius:6,
+              padding:'5px 12px', fontWeight:700, letterSpacing:1, whiteSpace:'nowrap' }}>
+              ✓ {selectedIds.size} row{selectedIds.size !== 1 ? 's' : ''} selected
+            </span>
+            <button onClick={() => setSelectedIds(new Set())} title="Clear selection"
+              style={{ background:'none', border:'none', cursor:'pointer', color:'#4b7a60', padding:2, display:'flex', alignItems:'center' }}
+              onMouseEnter={e=>e.currentTarget.style.color='#f87171'}
+              onMouseLeave={e=>e.currentTarget.style.color='#4b7a60'}>
+              <X size={12}/>
+            </button>
+          </div>
+        )}
         <span style={{ fontSize:11, color:'#4b7a60', marginLeft:'auto' }}>
           {filtered.length}/{rows.length} rows
         </span>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════
-          STICKY HEADER + SYNCED BODY
-          Key technique:
-          - headerDiv: overflow-x:auto, overflow-y:hidden, no scrollbar shown
-          - bodyDiv:   overflow-x:auto, overflow-y:auto, max-height capped
-          - Both use same colgroup widths so columns align perfectly
-          - onScroll handlers keep scrollLeft in sync bidirectionally
-      ══════════════════════════════════════════════════════════════════ */}
       <div style={{ border:'1px solid #1a3028', borderRadius:10, overflow:'hidden' }}>
 
-        {/* ─ HEADER (sticky, never scrolls vertically) ─ */}
+        {/* ─ HEADER ─ */}
         <div ref={headerRef} onScroll={onHeaderScroll}
-          style={{ overflowX:'auto', overflowY:'hidden',
-            /* Hide the scrollbar on the header div */
-            scrollbarWidth:'none', msOverflowStyle:'none' }}>
-          {/* inline style to hide webkit scrollbar */}
-          <style>{`
-            .hdr-scroll::-webkit-scrollbar { display: none; }
-          `}</style>
+          style={{ overflowX:'auto', overflowY:'hidden', scrollbarWidth:'none', msOverflowStyle:'none' }}>
+          <style>{`.hdr-scroll::-webkit-scrollbar { display: none; }`}</style>
           <table className="hdr-scroll" style={{ borderCollapse:'collapse', tableLayout:'fixed', width:totalW, minWidth:totalW }}>
             <ColGroup />
             <thead>
               <tr>
+                {/* Select-all checkbox */}
+                <th style={{ width:CHECKBOX_W, minWidth:CHECKBOX_W, background:'#060f0b',
+                  borderBottom:'2px solid #1e3a2a', padding:'9px 6px',
+                  textAlign:'center', boxSizing:'border-box', verticalAlign:'middle' }}>
+                  <input
+                    ref={checkAllRef}
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    title={allSelected ? 'Deselect all' : 'Select all visible rows'}
+                    style={{ cursor:'pointer', accentColor:'#059669', width:13, height:13 }}
+                  />
+                </th>
                 {cols.map(col => (
                   <ResizerTh key={col.key} col={col}
                     width={widths[col.key]||DEFAULT_COL_WIDTH}
@@ -546,37 +608,65 @@ export default function DataTable({
           </table>
         </div>
 
-        {/* ─ BODY (scrollable, synced with header) ─ */}
+        {/* ─ BODY ─ */}
         <div ref={bodyRef} onScroll={onBodyScroll}
           style={{ overflowX:'auto', overflowY:'auto', maxHeight:500 }}>
           <table style={{ borderCollapse:'collapse', tableLayout:'fixed', width:totalW, minWidth:totalW }}>
             <ColGroup />
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={cols.length+(showActualActions?1:0)}
+                <tr><td colSpan={cols.length + 1 + (showActualActions ? 1 : 0)}
                   style={{ padding:'28px 0', textAlign:'center', color:'#4b7a60', fontSize:12, fontStyle:'italic' }}>
                   No rows match the current filters
                 </td></tr>
-              ) : filtered.map((row, i) => (
-                <tr key={row.id??i} style={{
-                  background: editingId===(row.id??i)
-                    ? 'rgba(5,150,105,0.08)'
-                    : i%2===0 ? 'rgba(9,22,17,0.5)' : 'rgba(6,15,10,0.4)',
-                  transition:'background 0.15s',
-                }}>
-                  {showActualActions && editingId===(row.id??i)
-                    ? <EditRow row={row} cols={cols} widths={widths}
-                        saving={savingId===(row.id??i)}
-                        onSave={draft=>handleSave(row.id??i, draft)}
-                        onCancel={()=>setEditingId(null)} role={role} />
-                    : <ReadRow row={row} cols={cols} widths={widths}
-                        onEdit={id=>setEditingId(id)}
-                        onDelete={onDelete}
-                        onStatusChange={onStatusChange}
-                        role={role} showActions={showActualActions} />
-                  }
-                </tr>
-              ))}
+              ) : filtered.map((row, i) => {
+                const rowKey   = row.id ?? i;
+                const isSelected = selectedIds.has(rowKey);
+                const isEditing  = editingId === rowKey;
+
+                let rowBg;
+                if (isSelected)  rowBg = 'rgba(5,150,105,0.18)';
+                else if (isEditing) rowBg = 'rgba(5,150,105,0.08)';
+                else rowBg = i % 2 === 0 ? 'rgba(9,22,17,0.5)' : 'rgba(6,15,10,0.4)';
+
+                return (
+                  <tr key={rowKey}
+                    onClick={isEditing ? undefined : e => handleRowClick(e, rowKey, i)}
+                    style={{
+                      background: rowBg,
+                      cursor: isEditing ? 'default' : 'pointer',
+                      transition: 'background 0.1s',
+                      outline: isSelected ? '1px solid rgba(5,150,105,0.3)' : 'none',
+                      outlineOffset: '-1px',
+                    }}
+                    onMouseEnter={e => { if (!isSelected && !isEditing) e.currentTarget.style.background = 'rgba(9,22,17,0.85)'; }}
+                    onMouseLeave={e => { if (!isSelected && !isEditing) e.currentTarget.style.background = rowBg; }}>
+
+                    {/* Row checkbox */}
+                    <td style={{ ...TD, width:CHECKBOX_W, minWidth:CHECKBOX_W, padding:'7px 8px', textAlign:'center' }}
+                      onClick={isEditing ? undefined : e => handleCheckboxClick(e, rowKey)}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => {}}
+                        style={{ cursor: isEditing ? 'default' : 'pointer', accentColor:'#059669', width:13, height:13, pointerEvents:'none' }}
+                      />
+                    </td>
+
+                    {isEditing
+                      ? <EditRow row={row} cols={cols} widths={widths}
+                          saving={savingId === rowKey}
+                          onSave={draft => handleSave(rowKey, draft)}
+                          onCancel={() => setEditingId(null)} role={role} />
+                      : <ReadRow row={row} cols={cols} widths={widths}
+                          onEdit={id => setEditingId(id)}
+                          onDelete={onDelete}
+                          onStatusChange={onStatusChange}
+                          role={role} showActions={showActualActions} />
+                    }
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

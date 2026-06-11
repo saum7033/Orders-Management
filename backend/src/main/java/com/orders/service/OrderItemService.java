@@ -1,14 +1,18 @@
 package com.orders.service;
 
+import com.orders.dto.ImportResult;
 import com.orders.dto.OrderItemDTO;
 import com.orders.entity.OrderItem;
 import com.orders.repository.OrderItemRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -18,7 +22,8 @@ public class OrderItemService {
     private final OrderItemRepository repo;
 
     public List<OrderItemDTO> getAll() {
-        return repo.findAll().stream().map(this::toDTO).collect(Collectors.toList());
+        return repo.findAll(Sort.by(Sort.Direction.DESC, "id"))
+                   .stream().map(this::toDTO).collect(Collectors.toList());
     }
 
     public List<OrderItemDTO> getByOrderNumber(String orderNumber) {
@@ -28,23 +33,72 @@ public class OrderItemService {
 
     @Transactional
     public OrderItemDTO saveOne(OrderItemDTO dto) {
+        String orderNum = dto.getOrderNumber().trim();
+        String partNo   = dto.getPartNo().trim();
+        if (repo.countDuplicateCombination(orderNum, partNo) > 0) {
+            throw new RuntimeException("Order Number + Part Number already exists");
+        }
         dto.setSource("MANUAL");
         return toDTO(repo.save(toEntity(dto)));
     }
 
-    /** Bulk save — skips rows that already exist (orderNumber + partNo duplicate check) */
+    /** Bulk save — validates Order Number (mandatory), Part Number (mandatory),
+     *  checks duplicate by (Order Number + Part Number) combination, returns ImportResult with per-row errors. */
     @Transactional
-    public List<OrderItemDTO> saveAll(List<OrderItemDTO> dtos) {
+    public ImportResult<OrderItemDTO> saveAll(List<OrderItemDTO> dtos) {
         List<OrderItem> toInsert = new ArrayList<>();
+        List<ImportResult.ImportError> errors = new ArrayList<>();
+        Set<String> seenKeys = new HashSet<>();
+        int rowIndex = 0;
+
         for (OrderItemDTO dto : dtos) {
-            if (dto.getOrderNumber() == null || dto.getPartNo() == null) continue;
-            boolean exists = repo.existsByOrderNumberAndPartNo(
-                    dto.getOrderNumber().trim(), dto.getPartNo().trim());
-            if (!exists) {
-                toInsert.add(toEntity(dto));
+            rowIndex++;
+
+            if (dto.getOrderNumber() == null || dto.getOrderNumber().isBlank()) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .reason("Order Number is missing.")
+                        .build());
+                continue;
             }
+
+            String orderNum = dto.getOrderNumber().trim();
+
+            if (dto.getPartNo() == null || dto.getPartNo().isBlank()) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .orderNumber(orderNum)
+                        .reason("Part Number is missing.")
+                        .build());
+                continue;
+            }
+
+            String partNo = dto.getPartNo().trim();
+            String compositeKey = orderNum.toLowerCase() + "|" + partNo.toLowerCase();
+
+            if (repo.countDuplicateCombination(orderNum, partNo) > 0
+                    || seenKeys.contains(compositeKey)) {
+                errors.add(ImportResult.ImportError.builder()
+                        .rowIndex(rowIndex)
+                        .orderNumber(orderNum)
+                        .reason("Order Number + Part Number already exists")
+                        .build());
+                continue;
+            }
+
+            seenKeys.add(compositeKey);
+            toInsert.add(toEntity(dto));
         }
-        return repo.saveAll(toInsert).stream().map(this::toDTO).collect(Collectors.toList());
+
+        List<OrderItemDTO> savedDtos = repo.saveAll(toInsert).stream().map(this::toDTO).collect(Collectors.toList());
+
+        return ImportResult.<OrderItemDTO>builder()
+                .totalRows(rowIndex)
+                .imported(savedDtos.size())
+                .failed(errors.size())
+                .savedRows(savedDtos)
+                .errors(errors)
+                .build();
     }
 
     @Transactional

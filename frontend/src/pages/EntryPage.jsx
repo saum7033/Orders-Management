@@ -10,6 +10,48 @@ import ManualEntryForm from '../components/ManualEntryForm';
 import SectionCard     from '../components/SectionCard';
 import Btn             from '../components/Btn';
 
+/* ── Import summary panel (shown after Excel save) ── */
+function ImportSummaryPanel({ result, onDismiss }) {
+  if (!result) return null;
+  const hasErrors = result.failed > 0;
+  return (
+    <div style={{
+      margin: '14px 0',
+      padding: '14px 16px',
+      borderRadius: 8,
+      background: hasErrors ? 'rgba(239,68,68,0.06)' : 'rgba(34,197,94,0.06)',
+      border: `1px solid ${hasErrors ? 'rgba(239,68,68,0.28)' : 'rgba(34,197,94,0.28)'}`,
+    }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+        <span style={{ fontWeight:700, fontSize:11, letterSpacing:1, color: hasErrors ? '#f87171' : '#6ee7b7' }}>
+          IMPORT SUMMARY
+        </span>
+        <button onClick={onDismiss} style={{
+          background:'none', border:'none', cursor:'pointer',
+          color:'#4b7a60', fontSize:16, lineHeight:1, padding:'0 2px',
+        }}>✕</button>
+      </div>
+      <div style={{ display:'flex', gap:28, fontSize:12, marginBottom: result.errors?.length ? 12 : 0 }}>
+        <span style={{ color:'#9ca3af' }}>Total rows: <strong style={{ color:'#e2e8f0' }}>{result.totalRows}</strong></span>
+        <span style={{ color:'#9ca3af' }}>Imported: <strong style={{ color:'#6ee7b7' }}>{result.imported}</strong></span>
+        <span style={{ color:'#9ca3af' }}>Failed: <strong style={{ color: hasErrors ? '#f87171' : '#6ee7b7' }}>{result.failed}</strong></span>
+      </div>
+      {result.errors?.length > 0 && (
+        <div style={{ borderTop:'1px solid rgba(239,68,68,0.15)', paddingTop:8 }}>
+          {result.errors.map((err, i) => (
+            <div key={i} style={{
+              fontSize:11, color:'#fca5a5', padding:'3px 0',
+              borderBottom:'1px solid rgba(239,68,68,0.08)',
+            }}>
+              Row {err.rowIndex}{err.orderNumber ? ` · ${err.orderNumber}` : ''}: {err.reason}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Tab buttons ── */
 function TableTab({ active, onClick, children }) {
   return (
@@ -46,6 +88,8 @@ function PreviewBanner() {
   );
 }
 
+const sortByIdDesc = arr => [...(arr || [])].sort((a, b) => (b.id ?? 0) - (a.id ?? 0));
+
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export default function EntryPage({ authUser }) {
   const role    = authUser?.role || 'USER';
@@ -81,6 +125,11 @@ export default function EntryPage({ authUser }) {
   const [upKey3,     setUpKey3]     = useState(0);
 
   const [manualSaving, setManualSaving] = useState(false);
+
+  /* Import result summaries (shown after Excel bulk save) */
+  const [importResult1, setImportResult1] = useState(null);
+  const [importResult2, setImportResult2] = useState(null);
+  const [importResult3, setImportResult3] = useState(null);
 
   /* ── TABLE 2 is SOURCE OF TRUTH for status, comments, remark ──────────── */
   const t2SyncMap = useMemo(() => {
@@ -124,9 +173,9 @@ export default function EntryPage({ authUser }) {
         orderSummariesApi.getAll(),
         orderTransactionsApi.getAll(),
       ]);
-      setSavedItems(items || []);
-      setSavedSummaries(summaries || []);
-      setSavedTransactions(transactions || []);
+      setSavedItems(sortByIdDesc(items));
+      setSavedSummaries(sortByIdDesc(summaries || []));
+      setSavedTransactions(sortByIdDesc(transactions || []));
     } catch (e) {
       toast.error('Could not load data: ' + e.message);
     } finally {
@@ -140,32 +189,80 @@ export default function EntryPage({ authUser }) {
     setManualSaving(true);
     try {
       if (activeTable === 'T1') {
-        const saved = await orderItemsApi.createOne({ ...row, source: 'MANUAL' });
-        setSavedItems(prev => [saved, ...prev]);
+        const orderNum = (row.orderNumber || '').trim().toLowerCase();
+        const partNo   = (row.partNo   || '').trim().toLowerCase();
+        if (!orderNum || !partNo) {
+          throw new Error('Order Number and Part Number are required');
+        }
+        const duplicate = savedItems.some(
+          item =>
+            (item.orderNumber || '').trim().toLowerCase() === orderNum &&
+            (item.partNo      || '').trim().toLowerCase() === partNo
+        );
+        if (duplicate) {
+          throw new Error('Order Number + Part Number already exists');
+        }
+        await orderItemsApi.createOne({ ...row, source: 'MANUAL' });
+        const items = await orderItemsApi.getAll();
+        setSavedItems(sortByIdDesc(items));
         toast.success('Row saved to DB ✓');
       } else if (activeTable === 'T2') {
-        const saved = await orderSummariesApi.bulkSave([row]);
-        if (!saved.length) {
-          toast('Order Number already exists — row skipped', { icon: '⚠️' });
-        } else {
-          setSavedSummaries(prev => [...saved, ...prev]);
-          toast.success('Row saved to DB ✓');
+        const orderNum = (row.orderNumber || '').trim().toLowerCase();
+        if (!orderNum) {
+          throw new Error('Order Number is required');
         }
+        const duplicate = savedSummaries.some(
+          s => (s.orderNumber || '').trim().toLowerCase() === orderNum
+        );
+        if (duplicate) {
+          const e = new Error('Order Number Already Exists');
+          e.isWarning = true;
+          throw e;
+        }
+        const result2 = await orderSummariesApi.bulkSave([row]);
+        const summaries = await orderSummariesApi.getAll();
+        setSavedSummaries(sortByIdDesc(summaries || []));
+        if (!result2 || result2.imported === 0) {
+          const reason = result2?.errors?.[0]?.reason || 'Order Number Already Exists';
+          const e = new Error(reason);
+          e.isWarning = true;
+          throw e;
+        }
+        toast.success('1 Row Added Successfully');
       } else {
-        const saved = await orderTransactionsApi.bulkUpsert([row]);
-        if (!saved.length) {
-          toast('No data upserted', { icon: '⚠️' });
-        } else {
-          setSavedTransactions(prev => {
-            const updatedIds = new Set(saved.map(r => r.id));
-            const kept = prev.filter(r => !updatedIds.has(r.id));
-            return [...saved, ...kept];
-          });
-          toast.success('Row upserted to DB ✓');
+        const orderNum = (row.orderNumber || '').trim().toLowerCase();
+        const partNo   = (row.partNo   || '').trim().toLowerCase();
+        if (!orderNum) {
+          throw new Error('Order Number is required');
         }
+        const duplicate = savedTransactions.some(
+          t =>
+            (t.orderNumber || '').trim().toLowerCase() === orderNum &&
+            (t.partNo      || '').trim().toLowerCase() === partNo
+        );
+        if (duplicate) {
+          const e = new Error('Order Number + Part Number already exists');
+          e.isWarning = true;
+          throw e;
+        }
+        const result3 = await orderTransactionsApi.bulkUpsert([row]);
+        const transactions = await orderTransactionsApi.getAll();
+        setSavedTransactions(sortByIdDesc(transactions || []));
+        if (!result3 || result3.imported === 0) {
+          const reason = result3?.errors?.[0]?.reason || 'Order Number + Part Number already exists';
+          const e = new Error(reason);
+          e.isWarning = true;
+          throw e;
+        }
+        toast.success('1 Row Added Successfully');
       }
     } catch (e) {
-      toast.error('Save failed: ' + e.message);
+      if (e.isWarning) {
+        toast(e.message, { icon: '⚠️' });
+      } else {
+        toast.error(e.message || 'Failed to Save Record');
+      }
+      throw e;
     } finally {
       setManualSaving(false);
     }
@@ -280,7 +377,7 @@ export default function EntryPage({ authUser }) {
 
   /* ── Excel upload / preview ── */
   const handleFile1 = async (file) => {
-    setUploading1(true); setPreview1([]);
+    setUploading1(true); setPreview1([]); setImportResult1(null);
     try {
       const rows = await orderItemsApi.preview(file);
       setPreview1(rows || []);
@@ -290,7 +387,7 @@ export default function EntryPage({ authUser }) {
     finally { setUploading1(false); }
   };
   const handleFile2 = async (file) => {
-    setUploading2(true); setPreview2([]);
+    setUploading2(true); setPreview2([]); setImportResult2(null);
     try {
       const rows = await orderSummariesApi.preview(file);
       setPreview2(rows || []);
@@ -300,7 +397,7 @@ export default function EntryPage({ authUser }) {
     finally { setUploading2(false); }
   };
   const handleFile3 = async (file) => {
-    setUploading3(true); setPreview3([]);
+    setUploading3(true); setPreview3([]); setImportResult3(null);
     try {
       const rows = await orderTransactionsApi.preview(file);
       setPreview3(rows || []);
@@ -314,47 +411,73 @@ export default function EntryPage({ authUser }) {
   const handleSave1 = async () => {
     if (!preview1.length) return;
     setSaving1(true);
+    const prevCount = savedItems.length;
     try {
-      const saved = await orderItemsApi.bulkSave(preview1);
-      setSavedItems(prev => [...saved, ...prev]);
+      const result = await orderItemsApi.bulkSave(preview1);
+      const items = await orderItemsApi.getAll();
+      setSavedItems(sortByIdDesc(items));
       setPreview1([]); setUpKey1(k=>k+1);
-      const skipped = preview1.length - saved.length;
-      toast.success(skipped > 0 ? `Saved ${saved.length} rows ✓ (${skipped} duplicates skipped)` : `All ${saved.length} rows saved ✓`);
+      setImportResult1(result);
+      const inserted = items.length - prevCount;
+      const skipped  = preview1.length - Math.max(0, inserted);
+      if (inserted === 0) {
+        toast(`All ${preview1.length} rows already exist — nothing imported`, { icon: '⚠️' });
+      } else if (skipped > 0) {
+        toast(`${inserted} new rows added, ${skipped} already existed`, { icon: '⚠️' });
+      } else {
+        toast.success(`${inserted} rows imported successfully`);
+      }
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setSaving1(false); }
   };
   const handleSave2 = async () => {
     if (!preview2.length) return;
     setSaving2(true);
+    const prevCount = savedSummaries.length;
     try {
-      const saved = await orderSummariesApi.bulkSave(preview2);
-      setSavedSummaries(prev => [...saved, ...prev]);
+      const result = await orderSummariesApi.bulkSave(preview2);
+      const summaries = await orderSummariesApi.getAll();
+      setSavedSummaries(sortByIdDesc(summaries || []));
       setPreview2([]); setUpKey2(k=>k+1);
-      const skipped = preview2.length - saved.length;
-      toast.success(skipped > 0 ? `Saved ${saved.length} rows ✓ (${skipped} duplicates skipped)` : `All ${saved.length} rows saved ✓`);
+      setImportResult2(result);
+      const inserted = summaries.length - prevCount;
+      const skipped  = preview2.length - Math.max(0, inserted);
+      if (inserted === 0) {
+        toast(`All ${preview2.length} rows already exist — nothing imported`, { icon: '⚠️' });
+      } else if (skipped > 0) {
+        toast(`${inserted} new rows added, ${skipped} already existed`, { icon: '⚠️' });
+      } else {
+        toast.success(`${inserted} rows imported successfully`);
+      }
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setSaving2(false); }
   };
   const handleSave3 = async () => {
     if (!preview3.length) return;
     setSaving3(true);
+    const prevCount = savedTransactions.length;
     try {
-      const saved = await orderTransactionsApi.bulkUpsert(preview3);
-      // Replace existing records that were updated, append new ones
-      setSavedTransactions(prev => {
-        const updatedIds = new Set(saved.map(r => r.id));
-        const kept = prev.filter(r => !updatedIds.has(r.id));
-        return [...saved, ...kept];
-      });
+      const result = await orderTransactionsApi.bulkUpsert(preview3);
+      const transactions = await orderTransactionsApi.getAll();
+      setSavedTransactions(sortByIdDesc(transactions || []));
       setPreview3([]); setUpKey3(k=>k+1);
-      toast.success(`${saved.length} records upserted ✓`);
+      setImportResult3(result);
+      const inserted = transactions.length - prevCount;
+      const skipped  = preview3.length - Math.max(0, inserted);
+      if (inserted === 0) {
+        toast(`All ${preview3.length} rows already exist — nothing imported`, { icon: '⚠️' });
+      } else if (skipped > 0) {
+        toast(`${inserted} new rows added, ${skipped} already existed`, { icon: '⚠️' });
+      } else {
+        toast.success(`${inserted} rows imported successfully`);
+      }
     } catch (e) { toast.error('Save failed: ' + e.message); }
     finally { setSaving3(false); }
   };
 
-  const discardPreview1 = () => { setPreview1([]); setUpKey1(k=>k+1); };
-  const discardPreview2 = () => { setPreview2([]); setUpKey2(k=>k+1); };
-  const discardPreview3 = () => { setPreview3([]); setUpKey3(k=>k+1); };
+  const discardPreview1 = () => { setPreview1([]); setUpKey1(k=>k+1); setImportResult1(null); };
+  const discardPreview2 = () => { setPreview2([]); setUpKey2(k=>k+1); setImportResult2(null); };
+  const discardPreview3 = () => { setPreview3([]); setUpKey3(k=>k+1); setImportResult3(null); };
 
   const curMode = activeTable === 'T1' ? modeT1 : activeTable === 'T2' ? modeT2 : modeT3;
   const hasSyncedRows = savedSummaries.length > 0 && itemsWithSync.some(r => r.comments || r.status);
@@ -432,6 +555,7 @@ export default function EntryPage({ authUser }) {
                 onFile={handleFile1}
                 loading={uploading1}
               />
+              <ImportSummaryPanel result={importResult1} onDismiss={() => setImportResult1(null)} />
               {preview1.length > 0 && (
                 <div style={{ marginTop:24 }}>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
@@ -498,6 +622,7 @@ export default function EntryPage({ authUser }) {
                 onFile={handleFile2}
                 loading={uploading2}
               />
+              <ImportSummaryPanel result={importResult2} onDismiss={() => setImportResult2(null)} />
               {preview2.length > 0 && (
                 <div style={{ marginTop:24 }}>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
@@ -551,7 +676,7 @@ export default function EntryPage({ authUser }) {
             <SectionCard title="Manual Entry — Table 3 (Transactions)">
               <div style={{ fontSize:11, marginBottom:12, padding:'6px 12px', borderRadius:6,
                 background:'rgba(59,130,246,0.06)', border:'1px solid rgba(59,130,246,0.18)', color:'#93c5fd' }}>
-                📝 Entering a row with an existing Order # will update that record (upsert).
+                📝 Order Number + Part Number combination must be unique.
               </div>
               <ManualEntryForm tableType="T3" onAdd={handleManualAdd} loading={manualSaving} />
             </SectionCard>
@@ -561,7 +686,7 @@ export default function EntryPage({ authUser }) {
             <SectionCard title="Excel Upload — Table 3 (Transactions)">
               <div style={{ fontSize:11, marginBottom:12, padding:'6px 12px', borderRadius:6,
                 background:'rgba(59,130,246,0.06)', border:'1px solid rgba(59,130,246,0.18)', color:'#93c5fd' }}>
-                📤 Uploading updates existing records by Order # or inserts new ones — no duplicates created.
+                📤 Rows with an existing Order # + Part # combination will be skipped.
               </div>
               <FileUploadZone
                 uploadKey={upKey3}
@@ -570,6 +695,7 @@ export default function EntryPage({ authUser }) {
                 onFile={handleFile3}
                 loading={uploading3}
               />
+              <ImportSummaryPanel result={importResult3} onDismiss={() => setImportResult3(null)} />
               {preview3.length > 0 && (
                 <div style={{ marginTop:24 }}>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
